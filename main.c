@@ -22,7 +22,8 @@
 
 #include <stdlib.h>
 #include <unistd.h>
-#include <ftw.h>
+#include <fts.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <stdio.h>
 #include <string.h>
@@ -31,6 +32,7 @@
 #include <limits.h>
 #include <libgen.h>
 #include <assert.h>
+#include <pthread.h>
 #include "summarizefiles.h"
 
 /* POSIX.1 says each process has at least 20 file descriptors.
@@ -54,77 +56,6 @@ int sf_addentry(sumfiles_t *self, const char *fullpath, const char *basefile, co
 sumfiles_t *sfstate;
 int sf_getconsolesize(sumfiles_t *self);
 
-/**********************************************************************************************
- * print_entry: nftw example for using the dir traversal function. Left in code for debugging
- *    purposes.
- **********************************************************************************************/
-
-int print_entry(const char *filepath, const struct stat *info,
-                const int typeflag, struct FTW *pathinfo)
-{
-    /* const char *const filename = filepath + pathinfo->base; */
-    const double bytes = (double)info->st_size; /* Not exact if large! */
-    struct tm mtime;
-
-    localtime_r(&(info->st_mtime), &mtime);
-
-    printf("%04d-%02d-%02d %02d:%02d:%02d",
-           mtime.tm_year+1900, mtime.tm_mon+1, mtime.tm_mday,
-           mtime.tm_hour, mtime.tm_min, mtime.tm_sec);
-
-    char sbuf[256];
-
-    printf( show_size(sbuf, bytes) );
-
-    if (typeflag == FTW_SL)
-        {
-            char   *target;
-            size_t  maxlen = 1023;
-            ssize_t len;
-
-            while (1)
-                {
-
-                    target = malloc(maxlen + 1);
-                    if (target == NULL)
-                        return ENOMEM;
-
-                    len = readlink(filepath, target, maxlen);
-                    if (len == (ssize_t)-1)
-                        {
-                            const int saved_errno = errno;
-                            free(target);
-                            return saved_errno;
-                        }
-                    if (len >= (ssize_t)maxlen)
-                        {
-                            free(target);
-                            maxlen += 1024;
-                            continue;
-                        }
-
-                    target[len] = '\0';
-                    break;
-                }
-
-            printf(" %s -> %s\n", filepath, target);
-            free(target);
-
-        }
-    else if (typeflag == FTW_SLN)
-        printf(" %s (dangling symlink)\n", filepath);
-    else if (typeflag == FTW_F)
-        printf(" %s\n", filepath);
-    else if (typeflag == FTW_D || typeflag == FTW_DP)
-        printf(" %s/\n", filepath);
-    else if (typeflag == FTW_DNR)
-        printf(" %s/ (unreadable)\n", filepath);
-    else
-        printf(" %s (unknown)\n", filepath);
-
-    return 0;
-}
-
 char* get_file_extension(const char* filepath)
 {
     char* dot = strrchr(filepath, '.');
@@ -137,51 +68,56 @@ char* get_file_extension(const char* filepath)
     return dot + 1;
 }
 
-/**********************************************************************************************
- * summarize_entry: An entry point from nftw, this function is called everytime a file
- *    or directory is discovered for analysis.
- **********************************************************************************************/
-
-int summarize_entry(const char *filepath, const struct stat *info,
-                    const int typeflag, struct FTW *pathinfo)
+int foo(const FTSENT** one, const FTSENT** two)
 {
-    int ret = 0;
-    char tmpfp[strlen(filepath)];
-    int before = sfstate->exceptions;
-    strcpy(tmpfp, filepath); // Make a copy for the potentially destructive basename func
-
-    if ((sfstate->popts & SF_DEBUG) != 0)
-        {
-            print_entry(filepath, info, typeflag, pathinfo);
-        }
-    sf_addentry(sfstate, filepath, basename(tmpfp), info);
-    if (sfstate->exceptions>before)
-        {
-            print_entry(filepath, info, typeflag, pathinfo);
-        }
-
-    return ret;
+    //printf("foo(%s, %s)", (*one)->fts_name, (*two)->fts_name);
+    return (strcmp((*one)->fts_name, (*two)->fts_name));
 }
 
-/**********************************************************************************************
- * summarize_files: Execute a directory tree traversal using the nftw library. Begin an
- *    analysis of files within the tree.
- **********************************************************************************************/
-
-int summarize_files(const char *const dirpath)
+int sf_summarize(sumfiles_t *self)
 {
-    //db = sqlite_open();
-    int result;
+    printf("sf_sumarize(%s)\n", self->rootpath);
+    FTS* file_system = NULL;
+    FTSENT* child = NULL;
+    FTSENT* parent = NULL;
+    int ret = 0;
 
-    /* Invalid directory path? */
-    if (dirpath == NULL || *dirpath == '\0')
-        return errno = EINVAL;
+    //char rootargv[1][strlen(self->rootpath)+1];
+    //strcpy(rootargv[0], self->rootpath);
+    char *ftsargv[1] = { self->rootpath };
+    printf("before fts_open(%s)\n", ftsargv[0]);
+    file_system = fts_open(ftsargv,FTS_COMFOLLOW | FTS_NOCHDIR, NULL);
+    printf("after fts_open\n");
 
-    result = nftw(dirpath, summarize_entry, USE_FDS, FTW_PHYS);
-    if (result >= 0)
-        errno = result;
+    if (file_system != NULL)
+        {
+            while( (parent = fts_read(file_system)) != NULL)
+                {
+                    child = fts_children(file_system,0);
 
-    return errno;
+                    if (errno != 0)
+                        {
+                            perror("fts_children call failed");
+                        }
+
+                    while ((NULL != child)
+                            && (NULL != child->fts_link))
+                        {
+                            child = child->fts_link;
+                            //printf("%s%s\n", child->fts_path, child->fts_name);
+                            char filepath[ strlen(child->fts_path) + strlen(child->fts_name) + 1 ];
+                            struct stat info;
+                            sprintf( filepath, "%s%s", child->fts_path, child->fts_name );
+                            ret = lstat( filepath, &info);
+                            if (ret==0)
+                                {
+                                    sf_addentry(self, filepath, child->fts_name, &info);
+                                }
+                        }
+                }
+            fts_close(file_system);
+        }
+    return 0;
 }
 
 /**********************************************************************************************
@@ -208,18 +144,18 @@ sumfiles_t *sf_new(int popts)
     strcpy(self->rootpath, "");
     strcpy(self->rootpathdisp, "");
 
-    if ( (self->popts & SF_DEBUG) != 0)
+    if ( (self->popts & SF_DEBUG) )
         {
             printf("Debug Mode!\n");
         }
 
-    if ( (self->popts & SF_TIME) != 0)
+    if ( (self->popts & SF_TIME) )
         {
             // TODO choose a colsize based on console width?
             self->colsize = 50;
             printf("Time Mode: colsize=%d\n", self->colsize);
         }
-    if ( (self->popts & SF_LINES) != 0)
+    if ( (self->popts & SF_LINES) )
         {
             self->magic_session = magic_open(MAGIC_MIME|MAGIC_CHECK);
             if (self->magic_session == NULL)
@@ -286,12 +222,12 @@ int sf_refreshview(sumfiles_t *self)
 
     if ( (self->popts & SF_DEBUG) == 0 )
         {
-            time_t now = time(NULL);
-            if (self->last_refresh == 0 || (now - self->last_refresh) > 1)
-                {
-                    sf_show(self);
-                    self->last_refresh=now;
-                }
+            //time_t now = time(NULL);
+            //if (self->last_refresh == 0 || (now - self->last_refresh) > 1)
+            //      {
+            sf_show(self);
+            //          self->last_refresh=now;
+            //      }
         }
 }
 
@@ -382,14 +318,14 @@ int sf_addentry_byext(sumfiles_t *self, const char *fullpath, const char *basefi
 {
 
     char *ext = get_file_extension(basefile);
-    if ((sfstate->popts & SF_DEBUG) != 0)
+    if ((sfstate->popts & SF_DEBUG) )
         {
             printf("ext=%s\n", ext);
         }
     const double bytes = (double)info->st_size; /* Not exact if large! */
     int lines = 0;
 
-    if ((self->popts & SF_LINES) != 0)
+    if ((self->popts & SF_LINES) )
         {
             // using magic determine if the file is a text file and count the lines if so.
             const char* ftype = magic_file(self->magic_session, fullpath);
@@ -498,14 +434,17 @@ int sf_addentry(sumfiles_t *self, const char *fullpath, const char *basefile, co
             self->max_mod_time = info->st_mtime;
         }
 
-    sf_refreshview(self);
+    if (self->popts & SF_DEBUG)
+        {
+            sf_refreshview(self);
+        }
 
-    if ( (self->popts & SF_EXT) != 0 || (self->popts & SF_LINES) != 0)
+    if ( (self->popts & SF_EXT)  || (self->popts & SF_LINES) )
         {
             return sf_addentry_byext(self, fullpath, basefile, info);
         }
 
-    if ( (self->popts & SF_TIME) != 0 )
+    if ( (self->popts & SF_TIME)  )
         {
             return sf_addentry_bytime(self, fullpath, basefile, info);
         }
@@ -688,25 +627,41 @@ int main(int argc, char *argv[])
 
     assert(sfstate!=NULL);
 
+
     if (argc < optind)
         {
             strcpy(sfstate->rootpath, ".");
-            if (summarize_files("."))
+            // Use a single thread for debugging
+            if (sf_summarize(sfstate))
                 {
-                    fprintf(stderr, "%s.\n", strerror(errno));
-                    return EXIT_FAILURE;
+                    if (sf_summarize(sfstate))
+                        {
+                            fprintf(stderr, "%s.\n", strerror(errno));
+                            return EXIT_FAILURE;
+                        }
                 }
-
+            else
+                {
+                    mt_main(sfstate, ".");
+                }
         }
     else
         {
             for (arg = optind; arg < argc; arg++)
                 {
                     strcpy(sfstate->rootpath, argv[arg]);
-                    if (summarize_files(argv[arg]))
+                    if ((sfstate->popts & SF_DEBUG))
                         {
-                            fprintf(stderr, "%s.\n", strerror(errno));
-                            return EXIT_FAILURE;
+                            // Use a single thread for debugging
+                            if (sf_summarize(sfstate))
+                                {
+                                    fprintf(stderr, "%s.\n", strerror(errno));
+                                    return EXIT_FAILURE;
+                                }
+                        }
+                    else
+                        {
+                            mt_main(sfstate, argv[arg]);
                         }
                 }
         }
@@ -715,4 +670,53 @@ int main(int argc, char *argv[])
     sf_destroy(sfstate);
 
     return EXIT_SUCCESS;
+}
+
+
+
+void *mt_run(void * arg)
+{
+    sumfiles_t *sfstate = (sumfiles_t *)arg;
+    sf_summarize(sfstate);
+}
+
+MSEC_IN_NANO=1000000000 / 1000;
+
+void mt_main(sumfiles_t *self, char *rootpath)
+{
+    strcpy(self->rootpath, rootpath);
+
+    pthread_t child;
+
+    pthread_create( &child, NULL, mt_run, self);
+    int join_ret=EBUSY, thread_exit;
+    struct timespec ts;
+
+    while( join_ret == EBUSY || join_ret == ETIMEDOUT  )
+        {
+            // Update the console view, while the child analysis the tree
+            sf_refreshview(self);
+
+            if (clock_gettime(CLOCK_REALTIME, &ts) == -1)
+                {
+                    perror(clock_gettime);
+                }
+            ts.tv_nsec = 300 * MSEC_IN_NANO;
+
+            join_ret = pthread_timedjoin_np(child, &thread_exit, &ts);
+        }
+    switch(join_ret)
+        {
+        case EBUSY:
+            printf("join_ret=EBUSY\n");
+            break;
+        case EINVAL:
+            printf("join_ret=EINVAL\n");
+            break;
+        case ETIMEDOUT:
+            printf("join_ret=ETIMEDOUT\n");
+            break;
+        }
+
+
 }

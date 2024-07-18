@@ -104,7 +104,7 @@ void sf_renderline(sumfiles_t *self, sumentry_t *results, size_t result_size, in
             colidx++;
             if (colidx>self->entries_per_line)
                 {
-                    if ( (self->popts & SF_DEBUG) != 0 )
+                    if ( (self->popts & SF_DEBUG)  )
                         {
                             //printf("idx=%d, col=%d ncols=%d res_size=%d drows=%d crows=%d colbuf.len=%d\n",idx, colidx, self->entries_per_line, result_size, drows, self->console_rows, strlen(colbuf) );
                             //printf("Exceeded number of columns!\n");
@@ -165,7 +165,7 @@ void sf_showresults(sumfiles_t *self, sumentry_t *results, size_t result_size)
       printf( se_show(&results[idx], sbufentry ) );
       }*/
 
-    if ( (self->popts & SF_DEBUG) != 0 )
+    if ( (self->popts & SF_DEBUG)  )
         {
             printf("res_size=%d\n", result_size);
             printf("view_entries=%d\n", self->dentries);
@@ -174,7 +174,13 @@ void sf_showresults(sumfiles_t *self, sumentry_t *results, size_t result_size)
         }
     else
         {
-            printf("\e[1;1H\e[2J"); // Clear the console
+            time_t tnow = time(NULL);
+            if (self->last_refresh == 0 || (tnow - self->last_refresh) > 60)
+                {
+                    printf("\e[2J"); // Clear the console
+                    self->last_refresh = tnow;
+                }
+            printf("\e[1;1H"); // Move to the top cursor position
             char mindatebuf[64];
             char maxdatebuf[64];
             now(sbufentry, 64);
