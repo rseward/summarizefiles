@@ -1,0 +1,16 @@
+*~
+[#]*[#]
+*.class
+*.pyc
+*.jar
+*.zip
+*.mp3
+*.ogg
+*.db
+*.log
+*.tar.gz
+*.out
+*.exe
+*.so
+*.o
+env
