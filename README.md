@@ -56,18 +56,28 @@ Obtain the source for libcfu here:
 
 ### summarizefiles
 
+#### Fedora
+
 On Fedora you will need to install the following packages:
 
 - @development-tools for normal make, gcc build tools
 - file-devel for libmagic header files and libraries
 
 ---
-    dnf install @development-tools file-devel
+    dnf -y groupinstall "Development Tools"
+    dnf install file-devel -y
 ---
+
+#### Ubuntu
+
+TBD
+
+#### Build project
 
 After the prereqs are installed.
 
 ---
     make
 ---
+
 
